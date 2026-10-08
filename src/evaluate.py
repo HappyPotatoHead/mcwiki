@@ -1,0 +1,94 @@
+"""Retrieval evaluation: Recall@k and MRR, cosine-only vs reranked."""
+
+from src import retrieve, store
+
+TEST_CASES = [
+    ("What do I need to make a Nether portal?", "Nether Portal"),
+    ("What enchantment makes tools last longer?", "Unbreaking"),
+    ("How do villagers reproduce?", "Villager"),
+    ("What does Mending do?", "Mending"),
+    ("How does a wheat farm work?", "Wheat"),
+    ("What is the End?", "The End"),
+    ("What does Silk Touch do?", "Silk Touch"),
+    ("What is a librarian?", "Librarian"),
+    ("How do I make a furnace?", "Furnace"),
+    ("What does Fortune do?", "Fortune"),
+    ("What is the Nether?", "The Nether"),
+    ("How do I breed villagers?", "Villager"),
+    ("How do I enter the Nether?", "The Nether"),
+    ("How do I defeat the Ender Dragon?", "Ender Dragon"),
+    ("What does a hopper do?", "Hopper"),
+    ("What is an ender chest?", "Ender Chest"),
+    ("How do I enchant a weapon?", "Enchanting Table"),
+    ("What tools do I need to mine diamond ore?", "Diamond"),
+]
+
+
+def _rank(hits: list[retrieve.Hit], expected: str) -> int | None:
+    expected = expected.casefold()
+    for rank, hit in enumerate(hits, start=1):
+        if hit.title.casefold() == expected:
+            return rank
+    return None
+
+
+def _metrics(ranks: list[int | None]) -> dict:
+    scored = [r for r in ranks if r is not None]
+    total = len(ranks)
+    return {
+        "recall@1": (sum(1 for r in scored if r <= 1) / total) if total else 0.0,
+        "recall@5": (sum(1 for r in scored if r <= 5) / total) if total else 0.0,
+        "mrr": (sum(1 / r for r in scored) / total) if total else 0.0,
+        "found": len(scored),
+        "total": total,
+    }
+
+
+def main() -> None:
+    if store.count() == 0:
+        print("Index is empty — run `python -m src.cli ingest` first.")
+        return
+
+    indexed = store.indexed_titles()
+    cosine_ranks: list[int | None] = []
+    rerank_ranks: list[int | None] = []
+    skipped = 0
+
+    for query, expected in TEST_CASES:
+        if expected.casefold() not in {t.casefold() for t in indexed}:
+            skipped += 1
+            print(f"SKIP (not in index): {expected:<18} <- {query}")
+            continue
+
+        hits = retrieve.retrieve(query, rerank=True)
+        cosine_order = sorted(hits, key=lambda h: h.cosine, reverse=True)
+
+        cosine_rank = _rank(cosine_order, expected)
+        rerank_rank = _rank(hits, expected)
+        cosine_ranks.append(cosine_rank)
+        rerank_ranks.append(rerank_rank)
+
+        def fmt(rank: int | None) -> str:
+            return f"#{rank}" if rank else "miss"
+
+        status = "PASS" if rerank_rank == 1 else ("OK" if rerank_rank else "FAIL")
+        print(
+            f"{status:<4} {fmt(cosine_rank):>5} -> {fmt(rerank_rank):<5} "
+            f"{expected:<18} <- {query}"
+        )
+
+    cosine_metrics = _metrics(cosine_ranks)
+    rerank_metrics = _metrics(rerank_ranks)
+
+    if rerank_metrics["total"] == 0:
+        print("\nNo test query had its expected page in the index — nothing to score.")
+        return
+
+    print(f"\nEvaluated: {rerank_metrics['total']} queries ({skipped} skipped)")
+    print(f"{'':24} {'cosine':>8} {'rerank':>8}")
+    for key in ("recall@1", "recall@5", "mrr"):
+        print(f"{key:24} {cosine_metrics[key]:>8.3f} {rerank_metrics[key]:>8.3f}")
+
+
+if __name__ == "__main__":
+    main()
