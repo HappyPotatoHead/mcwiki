@@ -1,5 +1,3 @@
-"""Local CLI for the Minecraft wiki RAG (no server)."""
-
 import typer
 from rich.console import Console
 from rich.panel import Panel
@@ -12,19 +10,44 @@ from rich.progress import (
 )
 from rich.table import Table
 
-from src import config, embed, evaluate, generate, store, wiki
-from src import ingest as ingest_mod
-from src.retrieve import search as retrieve_search
+from .app import App
+from .config import (
+    CATEGORIES,
+    CHROMA_DIR,
+    COLLECTION_NAME,
+    DEVICE,
+    EMBED_MODEL,
+    FETCH_MODE,
+    OLLAMA_MODEL,
+    QUERY_INSTRUCTION,
+    RERANK_MODEL,
+    RERANK_TOP_K,
+    RETRIEVE_TOP_N,
+    WIKI_CACHE_PATH,
+)
+from .embedder import Embedder
+from .evaluate import main as evaluate_main
+from .generate import Generator
+from .ingestion.wiki import load_cache
+from .retrieve import Reranker
+from .store import ChromaStore
 
-app = typer.Typer(help="Local Minecraft wiki RAG: ingest, search, ask, evaluate.")
+app = typer.Typer()
 console = Console()
+embedder = Embedder(EMBED_MODEL, DEVICE)
+reranker = Reranker(RERANK_MODEL, DEVICE)
+database = ChromaStore(str(CHROMA_DIR), COLLECTION_NAME)
+generator = Generator(OLLAMA_MODEL)
+
+rag = App(generator, embedder, reranker, database, QUERY_INSTRUCTION)
 
 
-def _highlight(hit) -> str:
-    source = f"{hit.title} > {hit.section}"
-    scores = f"cosine={hit.cosine:.3f}"
-    if hit.rerank_score is not None:
-        scores += f"  rerank={hit.rerank_score:.3f}"
+def _highlight(match) -> str:
+    source = f"{match.title} > {match.section}"
+    scores = f"cosine={match.cosine:.3f}"
+    if match.rerank_score is not None:
+        scores += f"  rerank={match.rerank_score:.3f}"
+
     return f"[bold cyan]{source}[/]  [dim]{scores}[/]"
 
 
@@ -45,21 +68,22 @@ def ingest(
         None, "--limit", help="Cap the number of records fetched"
     ),
     mode: str = typer.Option(
-        config.FETCH_MODE,
+        FETCH_MODE,
         "--mode",
         help="Fetch mode: 'wikitext' (fast, 50/request) or 'extracts'",
     ),
 ):
-    """Fetch wiki pages, chunk them, embed them, and upsert into Chroma."""
     if mode not in ("wikitext", "extracts"):
         console.print(f"[red]Unknown --mode {mode!r}; use 'wikitext' or 'extracts'.[/]")
         raise typer.Exit(2)
     if categories is not None:
-        category_list = [c.strip() for c in categories.split(",") if c.strip()]
+        category_list = [
+            category.strip() for category in categories.split(",") if category.strip()
+        ]
     elif scope == "all":
         category_list = None
     else:
-        category_list = config.CRAWL_CATEGORIES
+        category_list = CATEGORIES
 
     with Progress(
         TextColumn("{task.description}"),
@@ -78,38 +102,25 @@ def ingest(
                 description=f"fetching wiki pages ({title})",
             )
 
-        records = list(
-            wiki.crawl(
-                category_list,
-                force=force,
-                limit=limit,
-                mode=mode,
-                on_progress=on_progress,
-            )
+        result = rag.ingest(
+            str(CHROMA_DIR),
+            COLLECTION_NAME,
+            categories=category_list,
+            force=force,
+            limit=limit,
+            mode=mode,
+            on_progress=on_progress,
         )
 
-    if not records:
+    if result["articles"] == 0:
         console.print("[yellow]No records found — check your scope and cache.[/]")
         raise typer.Exit()
 
-    unique: dict[int, dict] = {}
-    for record in records:
-        unique.setdefault(record["pageid"], record)
-    records = list(unique.values())
-
-    console.print(f"[green]Loaded {len(records)} articles.[/]")
-
-    chunks = ingest_mod.chunk_records(records)
-    console.print(f"[green]Chunked into {len(chunks)} chunks.[/]")
-
-    embeddings = embed.embed_documents([c["embed_text"] for c in chunks])
-    store.reset()
-    store.upsert(chunks, embeddings)
-
     console.print(
         Panel(
-            f"Ingested [bold]{len(records)}[/] articles as [bold]{len(chunks)}[/] chunks "
-            f"into [bold]{config.COLLECTION_NAME}[/].",
+            f"Ingested [bold]{result['articles']}[/] articles "
+            f"as [bold]{result['chunks']}[/] chunks "
+            f"into [bold]{COLLECTION_NAME}[/].",
             title="Done",
         )
     )
@@ -118,20 +129,15 @@ def ingest(
 @app.command()
 def search(
     query: str,
-    k: int = typer.Option(config.RERANK_TOP_K, "--k", help="Results to show"),
+    k: int = typer.Option(RERANK_TOP_K, "--k", help="Results to show"),
     top_n: int = typer.Option(
-        config.RETRIEVE_TOP_N, "--top-n", help="Candidates before reranking"
+        RETRIEVE_TOP_N, "--top-n", help="Candidates before reranking"
     ),
-    no_rerank: bool = typer.Option(
+    rerank: bool = typer.Option(
         False, "--no-rerank", help="Skip the cross-encoder stage"
     ),
 ):
-    """Show retrieval results for a query, with scores."""
-    hits = retrieve_search(query, k=k, top_n=top_n, rerank=not no_rerank)
-
-    if not hits:
-        console.print("[yellow]No results — run ingest first.[/]")
-        raise typer.Exit()
+    matches = rag.search(query, k, top_n, not rerank)
 
     table = Table(title=query)
     table.add_column("#", justify="right")
@@ -141,7 +147,7 @@ def search(
     table.add_column("section")
     table.add_column("url", overflow="fold")
 
-    for rank, hit in enumerate(hits, start=1):
+    for rank, hit in enumerate(matches, start=1):
         rerank_score = (
             f"{hit.rerank_score:.3f}" if hit.rerank_score is not None else "-"
         )
@@ -159,49 +165,47 @@ def search(
 
 @app.command()
 def ask(query: str):
-    """Retrieve context and answer with the local Ollama model."""
-    hits = retrieve_search(query)
+    matches = rag.search(query, RERANK_TOP_K, RETRIEVE_TOP_N, True)
 
-    if not hits:
+    if not matches:
         console.print("[yellow]No results — run ingest first.[/]")
         raise typer.Exit()
 
     context = "\n\n".join(
-        f"[{i}] {hit.title} > {hit.section}\n{hit.content}\n({hit.url})"
-        for i, hit in enumerate(hits, start=1)
+        f"[{index}] {match.title} > {match.section}\n{match.content}\n({match.url})"
+        for index, match in enumerate(matches, start=1)
     )
 
-    console.print("[dim]Generating answer with llama3.1:8b...[/]")
-    answer = generate.generate_answer(query, context)
+    console.print(f"[dim]Generating answer with {OLLAMA_MODEL}[/]")
+    answer = rag.generate_answers(query, context)
 
-    console.print(Panel(answer, title=f"Answer", border_style="green"))
+    console.print(Panel(answer, title="Answer", border_style="green"))
     console.print("\n[bold]Sources:[/]")
-    for rank, hit in enumerate(hits, start=1):
-        console.print(f"  [{rank}] {_highlight(hit)}")
-        console.print(f"      {hit.url}")
+    for rank, match in enumerate(matches, start=1):
+        console.print(f"  [{rank}] {_highlight(match)}")
+        console.print(f"      {match.url}")
 
 
 @app.command()
 def eval():
-    """Run the retrieval evaluation (Recall@1/5, MRR) on both stages."""
-    evaluate.main()
+    evaluate_main()
 
 
 @app.command()
 def status():
     """Show index and cache stats."""
-    cache = wiki.load_cache(config.WIKI_CACHE_PATH)
-    titles = store.indexed_titles()
+    cache = load_cache(WIKI_CACHE_PATH)
+    titles = database.indexed_titles()
     console.print(
         Panel(
             f"Cache records:       [bold]{len(cache)}[/]\n"
-            f"Indexed chunks:      [bold]{store.count()}[/]\n"
+            f"Indexed chunks:      [bold]{database.__len__()}[/]\n"
             f"Indexed pages:       [bold]{len(titles)}[/]\n"
-            f"Embed model:         {config.EMBED_MODEL}\n"
-            f"Rerank model:        {config.RERANK_MODEL}\n"
-            f"Ollama model:        {config.OLLAMA_MODEL}\n"
-            f"Chroma dir:          {config.CHROMA_DIR}\n"
-            f"Wiki cache:          {config.WIKI_CACHE_PATH}",
+            f"Embed model:         {EMBED_MODEL}\n"
+            f"Rerank model:        {RERANK_MODEL}\n"
+            f"Ollama model:        {OLLAMA_MODEL}\n"
+            f"Chroma dir:          {CHROMA_DIR}\n"
+            f"Wiki cache:          {WIKI_CACHE_PATH}",
             title="Status",
         )
     )
@@ -209,8 +213,7 @@ def status():
 
 @app.command()
 def reset():
-    """Delete the Chroma index (keeps the wiki cache)."""
-    store.reset()
+    database.reset()
     console.print("[green]Index cleared.[/]")
 
 

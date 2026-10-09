@@ -10,15 +10,15 @@ import sys
 import threading
 import time
 import urllib.parse
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Iterator
 
 import requests
 
 from src import config
-from src.wiki_text import wikitext_to_plaintext
+from src.ingestion.wiki_text import wikitext_to_plaintext
 
 _last_request_ts = 0.0
 _slot_lock = threading.Lock()
@@ -204,7 +204,10 @@ def fetch_page(pageid: int, title: str) -> dict | None:
     return {
         "pageid": page["pageid"],
         "title": page["title"],
-        "url": page.get("url", f"https://minecraft.wiki/wiki/{urllib.parse.quote(page['title'].replace(' ', '_'))}"),
+        "url": page.get(
+            "url",
+            f"https://minecraft.wiki/wiki/{urllib.parse.quote(page['title'].replace(' ', '_'))}",
+        ),
         "extract": extract,
         "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }

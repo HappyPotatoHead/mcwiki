@@ -1,8 +1,20 @@
 """Retrieval evaluation: Recall@k and MRR, cosine-only vs reranked."""
 
-from src import retrieve, store
+from .config import (
+    CHROMA_DIR,
+    COLLECTION_NAME,
+    DEVICE,
+    EMBED_MODEL,
+    QUERY_INSTRUCTION,
+    RERANK_MODEL,
+    RETRIEVE_TOP_N,
+)
+from .embedder import Embedder
+from .retrieve import Match, Reranker
+from .store import ChromaStore
 
 TEST_CASES = [
+    # question -> expected source
     ("What do I need to make a Nether portal?", "Nether Portal"),
     ("What enchantment makes tools last longer?", "Unbreaking"),
     ("How do villagers reproduce?", "Villager"),
@@ -24,20 +36,24 @@ TEST_CASES = [
 ]
 
 
-def _rank(hits: list[retrieve.Hit], expected: str) -> int | None:
+def _rank(matches: list[Match], expected: str) -> int | None:
     expected = expected.casefold()
-    for rank, hit in enumerate(hits, start=1):
-        if hit.title.casefold() == expected:
+    for rank, match in enumerate(matches, start=1):
+        if match.title.casefold() == expected:
             return rank
     return None
 
 
 def _metrics(ranks: list[int | None]) -> dict:
+    # queries where expected page was found
     scored = [r for r in ranks if r is not None]
     total = len(ranks)
     return {
+        # measures the proportion of queries where the expected page appears first
         "recall@1": (sum(1 for r in scored if r <= 1) / total) if total else 0.0,
+        # measures the proportion of queries where the expected page appears in the top 5
         "recall@5": (sum(1 for r in scored if r <= 5) / total) if total else 0.0,
+        # reward
         "mrr": (sum(1 / r for r in scored) / total) if total else 0.0,
         "found": len(scored),
         "total": total,
@@ -45,26 +61,44 @@ def _metrics(ranks: list[int | None]) -> dict:
 
 
 def main() -> None:
-    if store.count() == 0:
+    database = ChromaStore(str(CHROMA_DIR), COLLECTION_NAME)
+    reranker = Reranker(RERANK_MODEL, DEVICE)
+    embedder = Embedder(EMBED_MODEL, DEVICE)
+
+    if len(database) == 0:
         print("Index is empty — run `python -m src.cli ingest` first.")
         return
 
-    indexed = store.indexed_titles()
+    indexed = database.indexed_titles()
     cosine_ranks: list[int | None] = []
     rerank_ranks: list[int | None] = []
     skipped = 0
 
+    print(
+        f"{'Status':<4} {'Cosine rank':>5} -> {'Rerank rank':<5} {'Expected':<18} Query"
+    )
+
     for query, expected in TEST_CASES:
-        if expected.casefold() not in {t.casefold() for t in indexed}:
+        # we dont want to check non-existing sources
+        # Skip unindexed title rather than calling it a failure
+        if expected.casefold() not in {title.casefold() for title in indexed}:
             skipped += 1
             print(f"SKIP (not in index): {expected:<18} <- {query}")
             continue
 
-        hits = retrieve.retrieve(query, rerank=True)
-        cosine_order = sorted(hits, key=lambda h: h.cosine, reverse=True)
+        # shouldn't access private methods directly
+        # matches have gone through cosine similarity and reranking
+        matches = reranker._retrieve(
+            query, RETRIEVE_TOP_N, True, embedder, database, QUERY_INSTRUCTION
+        )
+
+        # sorts via similarity score
+        cosine_order = sorted(matches, key=lambda h: h.cosine, reverse=True)
 
         cosine_rank = _rank(cosine_order, expected)
-        rerank_rank = _rank(hits, expected)
+        # already sorted with rerank
+        rerank_rank = _rank(matches, expected)
+
         cosine_ranks.append(cosine_rank)
         rerank_ranks.append(rerank_rank)
 

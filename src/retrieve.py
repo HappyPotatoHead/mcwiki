@@ -1,100 +1,97 @@
-"""Two-stage retrieval: cosine top-N from Chroma, then cross-encoder rerank."""
+from pydantic import BaseModel
+from sentence_transformers import CrossEncoder
 
-from dataclasses import dataclass
+from .embedder import Embedder
+from .models import Model
+from .store import ChromaStore
 
-from src import config, embed, store
 
-
-@dataclass
-class Hit:
+class Match(BaseModel):
     id: str
     title: str
     section: str
     url: str
     content: str
     cosine: float
-    rerank_score: float | None = None
+    rerank_score: float | None = 0.0
 
 
-_reranker = None
+class Reranker(Model):
+    def search(
+        self,
+        query: str,
+        k: int,
+        top_n: int,
+        rerank: bool,
+        embedder: Embedder,
+        database: ChromaStore,
+        query_instructions: str,
+    ) -> list[Match]:
+        return self._retrieve(
+            query, top_n, rerank, embedder, database, query_instructions
+        )[:k]
 
+    def _get_reranker(
+        self,
+    ) -> CrossEncoder:
+        if self.model is None:
+            self.model = CrossEncoder(self.model_name, device=self.device)
 
-def _get_reranker():
-    global _reranker
-    if _reranker is None:
-        import torch
-        from sentence_transformers import CrossEncoder
+        return self.model
 
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        _reranker = CrossEncoder(config.RERANK_MODEL, device=device)
-    return _reranker
+    def _rerank(self, query: str, matches: list[Match]) -> list[Match]:
+        reranker = self._get_reranker()
+        pairs = [(query, match.content) for match in matches]
+        scores = reranker.predict(pairs)
+        for match, score in zip(matches, scores):
+            match.rerank_score = float(score)
 
+        matches.sort(key=lambda x: x.rerank_score or 0.0, reverse=True)
 
-def retrieve(
-    query: str,
-    top_n: int = config.RETRIEVE_TOP_N,
-    rerank: bool = True,
-) -> list[Hit]:
-    """
-    Return up to top_n candidates.
+        return matches
 
-    With rerank=True the list is ordered by cross-encoder score (each hit
-    keeps its cosine score too); otherwise it is ordered by cosine.
+    def _retrieve(
+        self,
+        query: str,
+        # this is the cosine similarity -> im reusing it for the subsequent reranking
+        top_n: int,
+        rerank: bool,
+        embedder: Embedder,
+        database: ChromaStore,
+        query_instructions: str,
+    ) -> list[Match]:
+        # retrieve matches based on query
+        # cast a wide net with cosine_similarity top n
+        # rerank boolean for cross encoding reranking
 
-    Top-N -> because it's cheap
-    The rerank is expensive, so we only do it for already narrowed down lists
-    """
+        query_embedding = embedder.embed_query(query, query_instructions)
+        top_results = database.query(query_embedding, top_n)
 
-    # bi-encoder / dense retrieval
-    query_embedding = embed.embed_query(query)
-    # get the top 50 similar results (cosine similarity)
-    raw = store.query(query_embedding, top_n)
+        matches = [
+            Match(
+                id=str(result.get("id") or ""),
+                title=str(result.get("title") or ""),
+                section=str(result.get("section") or ""),
+                url=str(result.get("url") or ""),
+                content=str(result.get("embed_text") or ""),
+                cosine=float(result.get("cosine") or 0.0),
+            )
+            for result in top_results
+        ]
 
-    hits = [
-        Hit(
-            id=r["id"],
-            title=r["title"],
-            section=r["section"],
-            url=r["url"],
-            content=r["embed_text"],
-            cosine=r["cosine"],
-        )
-        for r in raw
-    ]
+        # rerank_score: float | None = None
+        # cross enccoding reranking
+        if rerank and matches:
+            """
+                (
+                    "How do I make villagers breed?",
+                    "Villager > Breeding\n\nVillagers can breed when..."
+                ),
+                (
+                    "How do I make villagers breed?",
+                    "Villager > Trading\n\nVillagers trade..."
+                )
+            """
+            matches = self._rerank(query, matches)
 
-    if rerank and hits:
-        """
-        (
-            "How do I make villagers breed?",
-            "Villager > Breeding\n\nVillagers can breed when..."
-        ),
-        (
-            "How do I make villagers breed?",
-            "Villager > Trading\n\nVillagers trade..."
-        )
-        """
-        pairs = [(query, hit.content) for hit in hits]
-
-        # cross_encoding
-        # The pair becomes the query + document
-        # reranker is the cross_encoder
-        scores = _get_reranker().predict(pairs)
-
-        # associate each score with each "hit" <- retrieved result
-        for hit, score in zip(hits, scores):
-            hit.rerank_score = float(score)
-
-        # sort the reranked
-        hits.sort(key=lambda h: h.rerank_score, reverse=True)
-
-    return hits
-
-
-# wrap it around
-def search(
-    query: str,
-    k: int = config.RERANK_TOP_K,
-    top_n: int = config.RETRIEVE_TOP_N,
-    rerank: bool = True,
-) -> list[Hit]:
-    return retrieve(query, top_n=top_n, rerank=rerank)[:k]
+        return matches

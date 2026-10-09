@@ -222,3 +222,7 @@ __marimo__/
 # minecraft-rag local artifacts
 data/wiki_cache/
 data/chroma/
+cli.py
+logs.md
+
+tests/

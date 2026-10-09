@@ -1,10 +1,14 @@
 from pathlib import Path
 
+# chroma db
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
 # quicker retrieval
 WIKI_CACHE_PATH = DATA_DIR / "wiki_cache" / "pages.jsonl"
 CHROMA_DIR = DATA_DIR / "chroma"
+
+
+## WIKI FETCHING THINGS
 
 # provided api by the wiki
 # So this is not web scrapping
@@ -12,37 +16,40 @@ WIKI_API = "https://minecraft.wiki/api.php"
 # user agent is needed for the wiki api
 USER_AGENT = "minecraft-rag/0.1 (local RAG study project; runs offline after ingest)"
 
-# Batch retrievals
+# so that I dont get kicked off
 REQUEST_DELAY = 0.35
 REQUEST_RETRIES = 4
 ENUM_WORKERS = 4
 FETCH_WORKERS = 6
-FETCH_MODE = "wikitext"  # "wikitext" (50 pages/request) or "extracts" (1 page/request)
+# "wikitext" (50 pages/request) or "extracts" (1 page/request)
+FETCH_MODE = "wikitext"
 WIKI_BATCH_SIZE = 50
-
 
 # Top-level categories
 # Each expanded recursively
-CRAWL_CATEGORIES = [
+CATEGORIES = [
+    "Villager mechanics",
+    "Enchantments",
+    "Animals",
     "Blocks",
     "Items",
     "Mobs",
     "Entities",
     "Biomes",
     "Dimensions",
-    "Enchantments",
     "Tools",
     "Weapons",
     "Armor",
     "Food",
     "Redstone",
     "Plants",
-    "Machines",
+    "Mechanics",
     "Combat",
     "Storage",
     "Structures",
     "Utilities",
     "Trees",
+    "Crafting",
 ]
 
 # Top-level sections that are pure noise for QA retrieval.
@@ -55,6 +62,11 @@ DROP_SECTIONS = {
     "Notes",
     "See also",
     "Issues",
+    "Data values",
+    "Achievements",
+    "Advancements",
+    "History",
+    "Trivia",
 }
 
 CHUNK_MAX_CHARS = 1700
@@ -76,6 +88,7 @@ RERANK_TOP_K = 5
 
 OLLAMA_MODEL = "llama3.1:8b"
 
+DEVICE = "cuda"
 
 """
 Cross-encoder reranking

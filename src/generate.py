@@ -1,29 +1,36 @@
 import ollama
 
-from src import config
+from .models import Model
 
 
-def generate_answer(query: str, context: str) -> str:
-    prompt = f"""
-You are a Minecraft knowledge assistant.
+class Generator(Model):
+    def generate_answer(self, query: str, context: str) -> str:
+        prompt = self._generate_prompt(query, context)
+        response = ollama.chat(
+            model=self.model_name,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return response["message"]["content"]
 
-Answer the user's question using only the provided context.
+    def _get_model(
+        self,
+    ) -> None:
+        ollama.chat(model=self.model_name, messages=[], keep_alive="-1m")
 
-If the context does not contain enough information to answer the question,
-say that you do not have enough information.
+    def _generate_prompt(self, query: str, context: str) -> str:
+        return f"""
+        You are a Minecraft knowledge assistant.
 
-Context:
-{context}
+        Answer the user's question using only the provided context.
 
-Question:
-{query}
+        If the context does not contain enough information to answer the question,
+        say that you do not have enough information.
 
-Answer:
-"""
+        Context:
+        {context}
 
-    response = ollama.chat(
-        model=config.OLLAMA_MODEL,
-        messages=[{"role": "user", "content": prompt}],
-    )
+        Question:
+        {query}
 
-    return response["message"]["content"]
+        Answer:
+        """
