@@ -5,7 +5,7 @@ from .models import Model
 
 
 class Embedder(Model):
-    def embed_documents(self, texts: list[str], batch_size: int = 128) -> np.ndarray:
+    def embed_documents(self, texts: list[str], batch_size: int = 32) -> np.ndarray:
         return self._get_model().encode(
             texts,
             # because the texts might just be gigantic

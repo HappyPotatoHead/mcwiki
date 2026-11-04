@@ -60,6 +60,7 @@ The application also supports retrieval evaluation to compare ranking performanc
 ## Evaluation
 
 > Deeper evaluation is needed
+> paused temporarily
 
 The retrieval pipeline is evaluated using a set of test questions with expected wiki pages. Metrics include Recall@1, Recall@5 and Mean Reciprocal Rank (MRR).
 

@@ -65,7 +65,7 @@ class Reranker(Model):
             return []
 
         reranker = self._get_reranker()
-        pairs = [(query, match.content) for match in matches]
+        pairs = [(query, f"{match.title}\n\n{match.content}") for match in matches]
         scores = reranker.predict(pairs)
 
         for match, score in zip(matches, scores):

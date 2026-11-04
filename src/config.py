@@ -75,12 +75,12 @@ CHUNK_MAX_CHARS = 1700
 CHUNK_MIN_CHARS = 200
 
 # models meant to convert words to vectors
-EMBED_MODEL = "BAAI/bge-small-en-v1.5"
+EMBED_MODEL = "Qwen/Qwen3-Embedding-0.6B"
 # query for the embedding model to keep in mind when embedding
-QUERY_INSTRUCTION = "Represent this sentence for retrieving relevant passages: "
+QUERY_INSTRUCTION = "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery: "
 
 # cross-encoder reranking
-RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+RERANK_MODEL = "cross-encoder/ettin-reranker-400m-v1"
 
 COLLECTION_NAME = "minecraft_wiki"
 # cosine similarity
